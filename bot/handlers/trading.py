@@ -2,6 +2,7 @@
 Trading Handlers
 
 Handles /buy command with category selection flow.
+Uses index-based callbacks with context storage.
 """
 
 from telegram import Update
@@ -67,7 +68,8 @@ Choose a sport to browse markets:
     else:
         # For non-sports, search directly
         client = get_polymarket_client()
-        markets = await client.search_markets(category, limit=15)
+        cat_query = 'entertainment' if category == 'ent' else category
+        markets = await client.search_markets(cat_query, limit=15)
         context.user_data['markets'] = markets
         
         if not markets:
@@ -94,7 +96,7 @@ async def sport_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer("🔍 Loading markets...")
     
-    sport = query.data.split('_')[1]  # sport_cricket -> cricket
+    sport = query.data.split('_')[1]  # sp_cricket -> cricket
     context.user_data['sport'] = sport
     
     sport_emoji = Config.get_sport_emoji(sport)
@@ -133,7 +135,7 @@ async def page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    page = int(query.data.split('_')[1])
+    page = int(query.data.split('_')[1])  # pg_1 -> 1
     markets = context.user_data.get('markets', [])
     
     sport = context.user_data.get('sport', 'sports')
@@ -157,21 +159,17 @@ async def market_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    condition_id = query.data.split('_')[1]  # market_{condition_id}
-    
-    # Find market in cached list or fetch
+    # Get market by index from context
+    idx = int(query.data.split('_')[1])  # mkt_0 -> 0
     markets = context.user_data.get('markets', [])
-    market = next((m for m in markets if m.condition_id == condition_id), None)
     
-    if not market:
-        client = get_polymarket_client()
-        market = await client.get_market_details(condition_id)
-    
-    if not market:
-        await query.edit_message_text("⚠️ Market not found")
+    if idx >= len(markets):
+        await query.edit_message_text("⚠️ Market not found. Try again with /buy")
         return
     
+    market = markets[idx]
     context.user_data['selected_market'] = market
+    context.user_data['selected_market_index'] = idx
     
     # Calculate implied probabilities
     yes_prob = market.yes_price * 100
@@ -194,7 +192,7 @@ async def market_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         text,
         parse_mode='HTML',
-        reply_markup=outcome_keyboard(condition_id, market.yes_price, market.no_price)
+        reply_markup=outcome_keyboard()
     )
 
 
@@ -203,16 +201,14 @@ async def outcome_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    parts = query.data.split('_')  # outcome_{condition_id}_{yes/no}
-    condition_id = parts[1]
-    outcome = parts[2].upper()
+    outcome = query.data.split('_')[1].upper()  # out_yes -> YES
     
     market = context.user_data.get('selected_market')
     if not market:
         await query.edit_message_text("⚠️ Market not found. Start over with /buy")
         return
     
-    # Get the correct token
+    # Get the correct token and price
     if outcome == 'YES':
         token_id = market.yes_token_id
         price = market.yes_price
@@ -236,7 +232,7 @@ async def outcome_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         text,
         parse_mode='HTML',
-        reply_markup=amount_keyboard(token_id)
+        reply_markup=amount_keyboard()
     )
 
 
@@ -245,11 +241,9 @@ async def amount_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    parts = query.data.split('_')  # amount_{token_id}_{amount}
-    token_id = parts[1]
-    amount_str = parts[2]
+    amount_str = query.data.split('_')[1]  # amt_10 -> 10
     
-    if amount_str == 'custom':
+    if amount_str == 'c':  # custom
         await query.edit_message_text(
             "✏️ <b>Custom Amount</b>\n\nEnter amount in USD (min $5, max $100):",
             parse_mode='HTML'
@@ -257,10 +251,10 @@ async def amount_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return CUSTOM_AMOUNT
     
     amount = float(amount_str)
-    return await show_buy_confirmation(query, context, token_id, amount)
+    return await show_buy_confirmation(query, context, amount)
 
 
-async def show_buy_confirmation(query, context, token_id: str, amount: float):
+async def show_buy_confirmation(query, context, amount: float):
     """Show buy confirmation screen."""
     market = context.user_data.get('selected_market')
     outcome = context.user_data.get('selected_outcome', 'YES')
@@ -294,7 +288,7 @@ async def show_buy_confirmation(query, context, token_id: str, amount: float):
     await query.edit_message_text(
         text,
         parse_mode='HTML',
-        reply_markup=buy_confirm_keyboard(token_id, amount)
+        reply_markup=buy_confirm_keyboard()
     )
 
 
@@ -303,12 +297,15 @@ async def execute_buy_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     await query.answer("⚡ Executing buy...")
     
-    parts = query.data.split('_')  # exec_buy_{token_id}_{amount}
-    token_id = parts[2]
-    amount = float(parts[3])
-    
+    # Get all data from context
+    token_id = context.user_data.get('selected_token_id')
+    amount = context.user_data.get('buy_amount')
     market = context.user_data.get('selected_market')
     outcome = context.user_data.get('selected_outcome', 'YES')
+    
+    if not token_id or not amount:
+        await query.edit_message_text("⚠️ Session expired. Use /buy to start over.")
+        return
     
     market_info = {
         'condition_id': market.condition_id if market else '',
@@ -390,7 +387,7 @@ async def custom_amount_input(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(
             text,
             parse_mode='HTML',
-            reply_markup=buy_confirm_keyboard(token_id, amount)
+            reply_markup=buy_confirm_keyboard()
         )
         
         return ConversationHandler.END

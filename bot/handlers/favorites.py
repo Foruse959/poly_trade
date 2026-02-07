@@ -2,6 +2,7 @@
 Favorites Handlers
 
 Handles favorites management commands.
+Uses index-based callbacks with context storage.
 """
 
 from telegram import Update
@@ -22,6 +23,9 @@ async def favorites_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     db = await get_favorites_db()
     favorites = await db.get_favorites(user_id)
+    
+    # Store for callback reference
+    context.user_data['favorites'] = favorites
     
     if not favorites:
         text = """
@@ -63,22 +67,24 @@ async def favorites_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def fav_add_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle add to favorites callback."""
     query = update.callback_query
-    await query.answer("⭐ Added to favorites!")
     
-    token_id = query.data.split('_')[2]  # fav_add_{token_id}
     user_id = str(update.effective_user.id)
     
     # Get market info from context
     market = context.user_data.get('selected_market')
     outcome = context.user_data.get('selected_outcome', 'Yes')
     
-    label = market.question[:50] if market else f"Market {token_id[:8]}"
-    condition_id = market.condition_id if market else token_id
+    if not market:
+        await query.answer("⚠️ No market selected", show_alert=True)
+        return
+    
+    label = market.question[:50] if market else "Unknown"
+    token_id = market.yes_token_id if outcome == 'YES' else market.no_token_id
     
     db = await get_favorites_db()
     success = await db.add_favorite(
         user_id=user_id,
-        market_id=condition_id,
+        market_id=market.condition_id,
         token_id=token_id,
         label=label,
         outcome=outcome
@@ -95,10 +101,18 @@ async def fav_view_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer("📊 Loading market...")
     
-    market_id = query.data.split('_')[2]  # fav_view_{market_id}
+    # Get index from callback: fv_0 -> 0
+    idx = int(query.data.split('_')[1])
+    favorites = context.user_data.get('favorites', [])
+    
+    if idx >= len(favorites):
+        await query.edit_message_text("⚠️ Favorite not found")
+        return
+    
+    fav = favorites[idx]
     
     client = get_polymarket_client()
-    market = await client.get_market_details(market_id)
+    market = await client.get_market_details(fav.market_id)
     
     if not market:
         await query.edit_message_text("⚠️ Market not found or closed")
@@ -126,7 +140,7 @@ async def fav_view_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         text,
         parse_mode='HTML',
-        reply_markup=outcome_keyboard(market.condition_id, market.yes_price, market.no_price)
+        reply_markup=outcome_keyboard()
     )
 
 
@@ -134,20 +148,20 @@ async def fav_del_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle delete favorite callback."""
     query = update.callback_query
     
-    fav_id = query.data.split('_')[2]  # fav_del_{id}
+    # Get index from callback: fd_0 -> 0
+    idx = int(query.data.split('_')[1])
+    favorites = context.user_data.get('favorites', [])
+    
+    if idx >= len(favorites):
+        await query.answer("⚠️ Not found", show_alert=True)
+        return
+    
+    fav = favorites[idx]
     user_id = str(update.effective_user.id)
     
     db = await get_favorites_db()
-    
-    # Get favorite to find market_id
-    favorites = await db.get_favorites(user_id)
-    fav = next((f for f in favorites if str(f.id) == fav_id), None)
-    
-    if fav:
-        await db.remove_favorite(user_id, fav.market_id, fav.outcome)
-        await query.answer("🗑️ Removed from favorites", show_alert=True)
-    else:
-        await query.answer("⚠️ Not found", show_alert=True)
+    await db.remove_favorite(user_id, fav.market_id, fav.outcome)
+    await query.answer("🗑️ Removed from favorites", show_alert=True)
     
     # Refresh list
     await favorites_command(update, context)

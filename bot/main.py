@@ -175,7 +175,7 @@ def main():
     app.add_handler(CommandHandler("hot", hot_command))
     
     # ═══════════════════════════════════════════════════════════════════
-    # CALLBACK HANDLERS
+    # CALLBACK HANDLERS (using short patterns to avoid 64-byte limit)
     # ═══════════════════════════════════════════════════════════════════
     
     # Menu navigation
@@ -187,24 +187,24 @@ def main():
     app.add_handler(CallbackQueryHandler(favorites_callback, pattern="^favorites$"))
     app.add_handler(CallbackQueryHandler(hot_callback, pattern="^hot$"))
     
-    # Position handlers
-    app.add_handler(CallbackQueryHandler(position_detail_callback, pattern="^pos_detail_"))
-    app.add_handler(CallbackQueryHandler(sell_callback, pattern="^sell_"))
-    app.add_handler(CallbackQueryHandler(confirm_sell_callback, pattern="^confirm_sell_"))
+    # Position handlers (index-based)
+    app.add_handler(CallbackQueryHandler(position_detail_callback, pattern=r"^pos_\d+$"))
+    app.add_handler(CallbackQueryHandler(sell_callback, pattern=r"^sell_\d+_"))
+    app.add_handler(CallbackQueryHandler(confirm_sell_callback, pattern=r"^csell_\d+_\d+$"))
     
-    # Trading handlers
+    # Trading handlers (index-based)
     app.add_handler(CallbackQueryHandler(category_callback, pattern="^cat_"))
-    app.add_handler(CallbackQueryHandler(sport_callback, pattern="^sport_"))
-    app.add_handler(CallbackQueryHandler(page_callback, pattern="^page_"))
-    app.add_handler(CallbackQueryHandler(market_callback, pattern="^market_"))
-    app.add_handler(CallbackQueryHandler(outcome_callback, pattern="^outcome_"))
-    app.add_handler(CallbackQueryHandler(amount_callback, pattern="^amount_"))
-    app.add_handler(CallbackQueryHandler(execute_buy_callback, pattern="^exec_buy_"))
+    app.add_handler(CallbackQueryHandler(sport_callback, pattern="^sp_"))
+    app.add_handler(CallbackQueryHandler(page_callback, pattern=r"^pg_\d+$"))
+    app.add_handler(CallbackQueryHandler(market_callback, pattern=r"^mkt_\d+$"))
+    app.add_handler(CallbackQueryHandler(outcome_callback, pattern="^out_"))
+    app.add_handler(CallbackQueryHandler(amount_callback, pattern="^amt_"))
+    app.add_handler(CallbackQueryHandler(execute_buy_callback, pattern="^exec_buy$"))
     
-    # Favorites handlers
-    app.add_handler(CallbackQueryHandler(fav_add_callback, pattern="^fav_add_"))
-    app.add_handler(CallbackQueryHandler(fav_view_callback, pattern="^fav_view_"))
-    app.add_handler(CallbackQueryHandler(fav_del_callback, pattern="^fav_del_"))
+    # Favorites handlers (index-based)
+    app.add_handler(CallbackQueryHandler(fav_add_callback, pattern="^fav_add$"))
+    app.add_handler(CallbackQueryHandler(fav_view_callback, pattern=r"^fv_\d+$"))
+    app.add_handler(CallbackQueryHandler(fav_del_callback, pattern=r"^fd_\d+$"))
     
     # Error handler
     app.add_error_handler(error_handler)

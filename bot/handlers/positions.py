@@ -2,6 +2,7 @@
 Position Handlers
 
 Handles /positions command and sell operations.
+Uses index-based callbacks with context storage.
 """
 
 from telegram import Update
@@ -38,7 +39,10 @@ async def positions_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 Use /buy to open a new position.
 """
-        await update.message.reply_text(text, parse_mode='HTML')
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, parse_mode='HTML')
+        else:
+            await update.message.reply_text(text, parse_mode='HTML')
         return
     
     # Build positions display
@@ -74,19 +78,19 @@ async def position_detail_callback(update: Update, context: ContextTypes.DEFAULT
     query = update.callback_query
     await query.answer()
     
-    # Extract position index
-    data = query.data
-    index = int(data.split('_')[-1])
+    # Extract position index from callback: pos_0 -> 0
+    idx = int(query.data.split('_')[1])
     
     positions = context.user_data.get('positions', [])
-    if index >= len(positions):
+    if idx >= len(positions):
         await query.edit_message_text("⚠️ Position not found")
         return
     
-    pos = positions[index]
+    pos = positions[idx]
     
     # Store current position for sell operations
     context.user_data['current_position'] = pos
+    context.user_data['current_position_index'] = idx
     
     pnl_emoji = "📈" if pos.pnl >= 0 else "📉"
     pnl_color = "🟢" if pos.pnl >= 0 else "🔴"
@@ -111,7 +115,7 @@ async def position_detail_callback(update: Update, context: ContextTypes.DEFAULT
     await query.edit_message_text(
         text,
         parse_mode='HTML',
-        reply_markup=position_detail_keyboard(pos.token_id)
+        reply_markup=position_detail_keyboard(idx)
     )
 
 
@@ -120,22 +124,29 @@ async def sell_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    data = query.data  # Format: sell_{token_id}_{percent}
-    parts = data.split('_')
-    token_id = parts[1]
+    # Parse: sell_0_100 or sell_0_c
+    parts = query.data.split('_')
+    pos_index = int(parts[1])
     percent_str = parts[2]
     
-    if percent_str == 'custom':
+    if percent_str == 'c':
         # Ask for custom percentage
         await query.edit_message_text(
             "✏️ <b>Custom Sell</b>\n\nEnter percentage to sell (1-100):",
             parse_mode='HTML'
         )
-        context.user_data['sell_token_id'] = token_id
+        context.user_data['sell_pos_index'] = pos_index
         return CUSTOM_SELL_PERCENT
     
     percent = int(percent_str)
     pos = context.user_data.get('current_position')
+    
+    if not pos:
+        # Try to get from positions list
+        positions = context.user_data.get('positions', [])
+        if pos_index < len(positions):
+            pos = positions[pos_index]
+            context.user_data['current_position'] = pos
     
     if not pos:
         await query.edit_message_text("⚠️ Position not found")
@@ -143,6 +154,8 @@ async def sell_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     sell_value = pos.value * (percent / 100)
     sell_shares = pos.size * (percent / 100)
+    
+    context.user_data['sell_percent'] = percent
     
     text = f"""
 ⚡ <b>Confirm Sell</b>
@@ -161,7 +174,7 @@ async def sell_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         text,
         parse_mode='HTML',
-        reply_markup=sell_confirm_keyboard(token_id, percent)
+        reply_markup=sell_confirm_keyboard(pos_index, percent)
     )
 
 
@@ -170,13 +183,23 @@ async def confirm_sell_callback(update: Update, context: ContextTypes.DEFAULT_TY
     query = update.callback_query
     await query.answer("⚡ Executing sell...")
     
-    data = query.data  # Format: confirm_sell_{token_id}_{percent}
-    parts = data.split('_')
-    token_id = parts[2]
-    percent = int(parts[3])
+    # Parse: csell_0_100
+    parts = query.data.split('_')
+    pos_index = int(parts[1])
+    percent = int(parts[2])
+    
+    pos = context.user_data.get('current_position')
+    if not pos:
+        positions = context.user_data.get('positions', [])
+        if pos_index < len(positions):
+            pos = positions[pos_index]
+    
+    if not pos:
+        await query.edit_message_text("⚠️ Position not found. Use /positions to refresh.")
+        return
     
     client = get_polymarket_client()
-    result = await client.sell_market(token_id, percent=percent)
+    result = await client.sell_market(pos.token_id, percent=percent)
     
     if result.success:
         text = f"""
@@ -208,15 +231,22 @@ async def custom_sell_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ Enter a number between 1 and 100")
             return CUSTOM_SELL_PERCENT
         
-        token_id = context.user_data.get('sell_token_id')
+        pos_index = context.user_data.get('sell_pos_index', 0)
         pos = context.user_data.get('current_position')
         
-        if not token_id or not pos:
+        if not pos:
+            positions = context.user_data.get('positions', [])
+            if pos_index < len(positions):
+                pos = positions[pos_index]
+        
+        if not pos:
             await update.message.reply_text("⚠️ Position not found. Use /positions again.")
             return ConversationHandler.END
         
         sell_value = pos.value * (percent / 100)
         sell_shares = pos.size * (percent / 100)
+        
+        context.user_data['sell_percent'] = percent
         
         text = f"""
 ⚡ <b>Confirm Sell</b>
@@ -234,7 +264,7 @@ async def custom_sell_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             text,
             parse_mode='HTML',
-            reply_markup=sell_confirm_keyboard(token_id, percent)
+            reply_markup=sell_confirm_keyboard(pos_index, percent)
         )
         
         return ConversationHandler.END
