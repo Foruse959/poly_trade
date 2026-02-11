@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
 from datetime import datetime
 import httpx
+import json
 
 try:
     from py_clob_client.client import ClobClient
@@ -53,6 +54,17 @@ class SubMarket:
     yes_price: float
     no_price: float
     group_item_title: str = ""  # e.g., "Toss Winner", "Top Scorer"
+
+
+@dataclass
+class League:
+    """Represents a sports league/series (e.g., IPL, EPL, NBA)."""
+    series_id: str
+    name: str
+    sport: str
+    slug: str = ""
+    image: str = ""
+    event_count: int = 0
 
 
 @dataclass
@@ -286,6 +298,12 @@ class PolymarketClient:
         """Initialize paper trading database tables."""
         import aiosqlite
         try:
+            # Auto-create data directory if it doesn't exist
+            db_dir = os.path.dirname(Config.DATABASE_PATH)
+            if db_dir and not os.path.exists(db_dir):
+                os.makedirs(db_dir, exist_ok=True)
+                print(f"📁 Created data directory: {db_dir}")
+            
             async with aiosqlite.connect(Config.DATABASE_PATH) as db:
                 # Paper positions table
                 await db.execute('''
@@ -416,17 +434,30 @@ class PolymarketClient:
         if self.is_paper or not self.clob_client:
             return self._paper_balance
         
+        # Try CLOB client's get_balance method first
         try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(
-                    f"{Config.POLYMARKET_GAMMA_URL}/balance",
-                    params={"user": Config.FUNDER_ADDRESS}
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    return float(data.get('balance', 0))
+            if self.clob_client:
+                bal = self.clob_client.get_balance_allowance()
+                if isinstance(bal, dict):
+                    return float(bal.get('balance', 0)) / 1e6  # USDC has 6 decimals
+                return float(bal) / 1e6 if bal else 0.0
         except Exception as e:
-            print(f"⚠️ Balance fetch error: {e}")
+            print(f"⚠️ CLOB balance error: {e}")
+        
+        # Fallback: try CLOB REST API
+        try:
+            funder = Config.FUNDER_ADDRESS
+            if funder:
+                async with httpx.AsyncClient(timeout=15) as client:
+                    resp = await client.get(
+                        f"{Config.POLYMARKET_CLOB_URL}/data/balance",
+                        params={"address": funder}
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        return float(data.get('balance', 0))
+        except Exception as e:
+            print(f"⚠️ REST balance fetch error: {e}")
         
         return 0.0
     
@@ -435,17 +466,31 @@ class PolymarketClient:
         if self.is_paper or not self.clob_client:
             return self._get_paper_positions()
         
+        # Try CLOB client's built-in position fetching
         try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(
-                    f"{Config.POLYMARKET_GAMMA_URL}/positions",
-                    params={"user": Config.FUNDER_ADDRESS, "sizeThreshold": 0.01}
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    return self._parse_positions(data)
+            if self.clob_client:
+                positions_data = self.clob_client.get_positions()
+                if positions_data:
+                    return self._parse_positions(
+                        positions_data if isinstance(positions_data, list) else [positions_data]
+                    )
         except Exception as e:
-            print(f"⚠️ Positions fetch error: {e}")
+            print(f"⚠️ CLOB positions error: {e}")
+        
+        # Fallback: try CLOB REST API
+        try:
+            funder = Config.FUNDER_ADDRESS
+            if funder:
+                async with httpx.AsyncClient(timeout=15) as client:
+                    resp = await client.get(
+                        f"{Config.POLYMARKET_CLOB_URL}/data/positions",
+                        params={"address": funder}
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        return self._parse_positions(data if isinstance(data, list) else [])
+        except Exception as e:
+            print(f"⚠️ REST positions fetch error: {e}")
         
         return []
     
@@ -507,7 +552,135 @@ class PolymarketClient:
         return balance + position_value
     
     # ═══════════════════════════════════════════════════════════════════
-    # EVENTS & SUB-MARKETS (NEW APPROACH)
+    # LEAGUES & SPORTS DISCOVERY
+    # ═══════════════════════════════════════════════════════════════════
+    
+    async def get_sports_leagues(self, sport: str) -> List[League]:
+        """
+        Fetch available leagues/series for a sport from the /sports API.
+        
+        E.g., Cricket → [IPL, T20 World Cup, BBL, ...]
+             Football → [EPL, Champions League, La Liga, ...]
+        
+        Args:
+            sport: Sport name (cricket, football, nba, etc.)
+        
+        Returns:
+            List of League objects with series_id for event fetching
+        """
+        leagues = []
+        sport_lower = sport.lower()
+        sport_kws = SPORT_KEYWORDS.get(sport_lower, [sport_lower])
+        
+        try:
+            data = await self._fetch_with_retry(
+                f"{Config.POLYMARKET_GAMMA_URL}/sports",
+                params={},
+                timeout=30
+            )
+            
+            if not data:
+                print(f"⚠️ /sports API returned no data")
+                return leagues
+            
+            # Filter sports entries matching our sport
+            for item in data:
+                name = item.get('name', item.get('label', '')).lower()
+                slug = item.get('slug', '').lower()
+                combined = f"{name} {slug}"
+                
+                # Match by sport keywords
+                if any(kw in combined for kw in sport_kws) or sport_lower in combined:
+                    leagues.append(League(
+                        series_id=str(item.get('id', item.get('seriesId', ''))),
+                        name=item.get('name', item.get('label', 'Unknown League')),
+                        sport=sport_lower,
+                        slug=item.get('slug', ''),
+                        image=item.get('image', ''),
+                        event_count=int(item.get('eventCount', item.get('event_count', 0)))
+                    ))
+            
+            print(f"📊 Found {len(leagues)} {sport} leagues from /sports API")
+            
+        except Exception as e:
+            print(f"⚠️ Leagues fetch error: {e}")
+        
+        return leagues
+    
+    async def get_events_by_league(self, series_id: str, sport: str = '', limit: int = 15) -> List[Event]:
+        """
+        Fetch events for a specific league/series.
+        
+        Args:
+            series_id: The series ID from /sports API
+            sport: Sport name for keyword validation
+            limit: Max events to return
+        
+        Returns:
+            List of Event objects
+        """
+        events = []
+        sport_kws = SPORT_KEYWORDS.get(sport.lower(), [sport.lower()]) if sport else []
+        
+        try:
+            data = await self._fetch_with_retry(
+                f"{Config.POLYMARKET_GAMMA_URL}/events",
+                params={
+                    'series_id': series_id,
+                    'active': True,
+                    'closed': False,
+                    'limit': limit * 2
+                },
+                timeout=30
+            )
+            
+            if not data:
+                return events
+            
+            if not isinstance(data, list):
+                data = [data]
+            
+            for item in data:
+                # Light validation if we have sport keywords
+                if sport_kws:
+                    parsed = self._parse_event(item, sport.lower(), sport_kws)
+                else:
+                    parsed = self._parse_event(item, sport.lower(), [])
+                
+                if parsed:
+                    events.append(parsed)
+                    if len(events) >= limit:
+                        break
+            
+            print(f"📊 Found {len(events)} events for series {series_id}")
+            
+        except Exception as e:
+            print(f"⚠️ League events fetch error: {e}")
+        
+        return events
+    
+    async def get_tags(self) -> List[Dict]:
+        """
+        Fetch all available tags/categories from Polymarket.
+        Useful for non-automated sports like UFC, Boxing, F1.
+        
+        Returns:
+            List of tag dicts with 'id', 'label', 'slug'
+        """
+        try:
+            data = await self._fetch_with_retry(
+                f"{Config.POLYMARKET_GAMMA_URL}/tags",
+                params={},
+                timeout=30
+            )
+            if data and isinstance(data, list):
+                return data
+        except Exception as e:
+            print(f"⚠️ Tags fetch error: {e}")
+        return []
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # EVENTS & SUB-MARKETS
     # ═══════════════════════════════════════════════════════════════════
     
     async def get_sports_events(self, sport: str, limit: int = 15) -> List[Event]:
@@ -654,13 +827,13 @@ class PolymarketClient:
         return events
     
     def _parse_event(self, item: Dict, sport: str, sport_kws: List[str]) -> Optional[Event]:
-        """Parse an event from API response with strict keyword validation."""
+        """Parse an event from API response with keyword validation."""
         title = item.get('title', item.get('question', ''))
         description = item.get('description', '')
         combined = f"{title} {description}".lower()
         
-        # STRICT filtering - must match sport keywords
-        if not any(kw in combined for kw in sport_kws):
+        # If sport keywords provided, validate (skip for league-fetched events)
+        if sport_kws and not any(kw in combined for kw in sport_kws):
             return None
         
         # Parse sub-markets

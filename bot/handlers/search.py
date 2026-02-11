@@ -5,7 +5,7 @@ Handles /search and /info commands for finding markets.
 """
 
 from telegram import Update
-from telegram.ext import ContextTypes
+from telegram.ext import ContextTypes, ConversationHandler
 
 import sys
 import os
@@ -13,7 +13,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from config import Config
 from core.polymarket_client import get_polymarket_client
-from bot.keyboards.inline import search_results_keyboard, outcome_keyboard
+from bot.keyboards.inline import search_results_keyboard, outcome_keyboard, search_prompt_keyboard
+
+
+# Conversation states
+SEARCH_INPUT = 0
 
 
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -64,19 +68,64 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def search_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle search button callback - prompt for query."""
+    """Handle search button callback - prompt for query and wait for text input."""
     query = update.callback_query
     await query.answer()
     
     await query.edit_message_text(
         "🔍 <b>Search Markets</b>\n\n"
-        "Send a search query:\n\n"
+        "Type your search query:\n\n"
         "Examples:\n"
         "• india cricket\n"
         "• nba playoffs\n"
-        "• trump president",
-        parse_mode='HTML'
+        "• trump president\n\n"
+        "<i>Send a message with your search term:</i>",
+        parse_mode='HTML',
+        reply_markup=search_prompt_keyboard()
     )
+    
+    return SEARCH_INPUT
+
+
+async def search_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle text input after search button - perform the search."""
+    query = update.message.text.strip()
+    
+    if not query:
+        await update.message.reply_text("⚠️ Please enter a search term")
+        return SEARCH_INPUT
+    
+    await update.message.reply_text(f"🔍 Searching for: <b>{query}</b>...", parse_mode='HTML')
+    
+    client = get_polymarket_client()
+    markets = await client.search_markets(query, limit=10)
+    
+    if not markets:
+        await update.message.reply_text(
+            f"📭 No markets found for '<b>{query}</b>'\n\n"
+            "Try different keywords or /buy to browse categories.",
+            parse_mode='HTML'
+        )
+        return ConversationHandler.END
+    
+    context.user_data['markets'] = markets
+    context.user_data['search_query'] = query
+    
+    # Build results text
+    text = f"🔍 <b>Results for '{query}'</b>\n\n"
+    
+    for i, market in enumerate(markets[:8], 1):
+        yes_price = market.yes_price * 100
+        text += f"{i}. {market.question[:45]}...\n"
+        text += f"   ✅ YES: {yes_price:.0f}¢ | 📊 Vol: ${market.volume:,.0f}\n\n"
+    
+    await update.message.reply_text(
+        text,
+        parse_mode='HTML',
+        reply_markup=search_results_keyboard(markets)
+    )
+    
+    return ConversationHandler.END
 
 
 async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -123,7 +172,7 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         text,
         parse_mode='HTML',
-        reply_markup=outcome_keyboard(market.condition_id, market.yes_price, market.no_price)
+        reply_markup=outcome_keyboard()
     )
 
 

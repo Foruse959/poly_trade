@@ -32,15 +32,15 @@ from bot.handlers.positions import (
     confirm_sell_callback, custom_sell_input, CUSTOM_SELL_PERCENT
 )
 from bot.handlers.trading import (
-    buy_command, category_callback, sport_callback, 
+    buy_command, category_callback, sport_callback, league_callback,
     event_callback, events_page_callback, sub_market_callback,
     back_events_callback, back_sub_callback, back_out_callback,
     outcome_callback, amount_callback, market_callback, page_callback,
     execute_buy_callback, custom_amount_input, CUSTOM_AMOUNT
 )
 from bot.handlers.search import (
-    search_command, search_callback, info_command,
-    hot_command, hot_callback
+    search_command, search_callback, search_text_input, info_command,
+    hot_command, hot_callback, SEARCH_INPUT
 )
 from bot.handlers.favorites import (
     favorites_command, favorites_callback,
@@ -227,7 +227,7 @@ def main():
     # ConversationHandler for custom sell percentage
     custom_sell_handler = ConversationHandler(
         entry_points=[
-            CallbackQueryHandler(sell_callback, pattern=r"^sell_\d+_custom$")
+            CallbackQueryHandler(sell_callback, pattern=r"^sell_\d+_c$")
         ],
         states={
             CUSTOM_SELL_PERCENT: [
@@ -245,6 +245,27 @@ def main():
     )
     app.add_handler(custom_sell_handler)
     
+    # ConversationHandler for inline search button
+    search_conv_handler = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(search_callback, pattern="^search$")
+        ],
+        states={
+            SEARCH_INPUT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, search_text_input)
+            ]
+        },
+        fallbacks=[
+            CommandHandler("start", start_command),
+            CommandHandler("cancel", start_command),
+            CommandHandler("search", search_command),
+            CallbackQueryHandler(menu_callback, pattern="^menu$")
+        ],
+        name="search_conversation",
+        persistent=False
+    )
+    app.add_handler(search_conv_handler)
+    
     # ═══════════════════════════════════════════════════════════════════
     # CALLBACK HANDLERS
     # ═══════════════════════════════════════════════════════════════════
@@ -254,20 +275,23 @@ def main():
     app.add_handler(CallbackQueryHandler(balance_callback, pattern="^balance$"))
     app.add_handler(CallbackQueryHandler(positions_command, pattern="^positions$"))
     app.add_handler(CallbackQueryHandler(buy_command, pattern="^buy$"))
-    app.add_handler(CallbackQueryHandler(search_callback, pattern="^search$"))
+    # Note: search$ is now handled by ConversationHandler above
     app.add_handler(CallbackQueryHandler(favorites_callback, pattern="^favorites$"))
     app.add_handler(CallbackQueryHandler(hot_callback, pattern="^hot$"))
     
     # Position handlers (non-custom - custom is handled by ConversationHandler above)
     app.add_handler(CallbackQueryHandler(position_detail_callback, pattern=r"^pos_\d+$"))
-    app.add_handler(CallbackQueryHandler(sell_callback, pattern=r"^sell_\d+_(?!custom)\w+$"))
+    app.add_handler(CallbackQueryHandler(sell_callback, pattern=r"^sell_\d+_(?!c$)\w+$"))
     app.add_handler(CallbackQueryHandler(confirm_sell_callback, pattern=r"^csell_\d+_\d+$"))
     
     # Trading handlers - EVENT BASED FLOW
     app.add_handler(CallbackQueryHandler(category_callback, pattern="^cat_"))
     app.add_handler(CallbackQueryHandler(sport_callback, pattern="^sp_"))
     
-    # Event navigation (Sport → Events → Sub-Markets)
+    # League navigation (Sport → Leagues → Events)
+    app.add_handler(CallbackQueryHandler(league_callback, pattern=r"^lg_"))
+    
+    # Event navigation (Events → Sub-Markets)
     app.add_handler(CallbackQueryHandler(event_callback, pattern=r"^evt_\d+$"))
     app.add_handler(CallbackQueryHandler(events_page_callback, pattern=r"^evp_\d+$"))
     app.add_handler(CallbackQueryHandler(sub_market_callback, pattern=r"^sub_\d+_\d+$"))
@@ -291,11 +315,11 @@ def main():
     app.add_handler(CallbackQueryHandler(fav_view_callback, pattern=r"^fv_\d+$"))
     app.add_handler(CallbackQueryHandler(fav_del_callback, pattern=r"^fd_\d+$"))
     
-    # Orders handlers
+    # Orders handlers (cancel_all MUST be before cancel_ to avoid pattern shadowing)
     app.add_handler(CallbackQueryHandler(orders_callback, pattern="^orders$"))
     app.add_handler(CallbackQueryHandler(order_book_callback, pattern="^orderbook$"))
-    app.add_handler(CallbackQueryHandler(cancel_order_callback, pattern="^cancel_"))
     app.add_handler(CallbackQueryHandler(cancel_all_callback, pattern="^cancel_all$"))
+    app.add_handler(CallbackQueryHandler(cancel_order_callback, pattern="^cancel_"))
     
     # Alerts handlers
     app.add_handler(CallbackQueryHandler(alerts_callback, pattern="^alerts$"))

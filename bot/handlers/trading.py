@@ -15,8 +15,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from config import Config
 from core.polymarket_client import get_polymarket_client
 from bot.keyboards.inline import (
-    category_keyboard, sports_keyboard, events_keyboard, sub_markets_keyboard,
-    outcome_keyboard, amount_keyboard, buy_confirm_keyboard, markets_keyboard
+    category_keyboard, sports_keyboard, leagues_keyboard, events_keyboard,
+    sub_markets_keyboard, outcome_keyboard, amount_keyboard,
+    buy_confirm_keyboard, markets_keyboard
 )
 
 
@@ -92,32 +93,108 @@ Found {len(markets)} markets:
 
 
 async def sport_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle sport selection - fetch EVENTS (matches)."""
+    """Handle sport selection - fetch LEAGUES first, then events."""
     query = update.callback_query
-    await query.answer("🔍 Loading events...")
+    await query.answer("🔍 Loading leagues...")
     
     sport = query.data.split('_')[1]  # sp_cricket -> cricket
     context.user_data['sport'] = sport
     
     sport_emoji = Config.get_sport_emoji(sport)
-    
     client = get_polymarket_client()
     
-    # Fetch EVENTS (not just markets)
-    events = await client.get_sports_events(sport=sport, limit=15)
+    # Try to fetch leagues/series for this sport
+    leagues = await client.get_sports_leagues(sport)
+    context.user_data['leagues'] = leagues
+    
+    if leagues:
+        # Show league selection
+        text = f"""
+{sport_emoji} <b>{sport.upper()} Leagues</b>
+
+Found {len(leagues)} leagues/tournaments:
+
+<i>Select a league to see matches, or view all events:</i>
+"""
+        await query.edit_message_text(
+            text,
+            parse_mode='HTML',
+            reply_markup=leagues_keyboard(leagues, sport)
+        )
+    else:
+        # No leagues found (e.g., UFC uses tags) — fall back to all events
+        events = await client.get_sports_events(sport=sport, limit=15)
+        context.user_data['events'] = events
+        
+        if not events:
+            await query.edit_message_text(
+                f"📭 No active {sport.upper()} events found.\n\nTry /search {sport}",
+                reply_markup=sports_keyboard()
+            )
+            return
+        
+        text = f"""
+{sport_emoji} <b>{sport.upper()} Events</b>
+
+Found {len(events)} active matches/events:
+
+<i>Tap an event to see betting options</i>
+"""
+        await query.edit_message_text(
+            text,
+            parse_mode='HTML',
+            reply_markup=events_keyboard(events)
+        )
+
+
+async def league_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle league selection - fetch events for the selected league."""
+    query = update.callback_query
+    await query.answer("🔍 Loading events...")
+    
+    sport = context.user_data.get('sport', 'sports')
+    sport_emoji = Config.get_sport_emoji(sport)
+    client = get_polymarket_client()
+    
+    league_data = query.data  # lg_0, lg_1, or lg_all
+    league_key = league_data.split('_')[1]
+    
+    if league_key == 'all':
+        # "All Events" — fetch without league filter
+        events = await client.get_sports_events(sport=sport, limit=15)
+        league_name = f"All {sport.upper()}"
+    else:
+        # Fetch events for specific league
+        idx = int(league_key)
+        leagues = context.user_data.get('leagues', [])
+        
+        if idx >= len(leagues):
+            await query.edit_message_text("⚠️ League not found. Try again with /buy")
+            return
+        
+        league = leagues[idx]
+        league_name = league.name
+        events = await client.get_events_by_league(
+            series_id=league.series_id,
+            sport=sport,
+            limit=15
+        )
+    
     context.user_data['events'] = events
+    context.user_data['selected_league_name'] = league_name
     
     if not events:
         await query.edit_message_text(
-            f"📭 No active {sport.upper()} events found.\n\nTry /search {sport}",
-            reply_markup=sports_keyboard()
+            f"📭 No active events in <b>{league_name}</b>.\n\nTry another league or /search {sport}",
+            parse_mode='HTML',
+            reply_markup=leagues_keyboard(context.user_data.get('leagues', []), sport)
         )
         return
     
     text = f"""
-{sport_emoji} <b>{sport.upper()} Events</b>
+{sport_emoji} <b>{league_name}</b>
 
-Found {len(events)} active matches/events:
+Found {len(events)} active matches:
 
 <i>Tap an event to see betting options</i>
 """

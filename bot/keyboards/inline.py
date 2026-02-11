@@ -98,6 +98,37 @@ def sports_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
+def leagues_keyboard(leagues: List[Any], sport: str = '') -> InlineKeyboardMarkup:
+    """
+    League/series selection within a sport.
+    E.g., Cricket → IPL, T20 World Cup, BBL, PSL
+    """
+    buttons = []
+    
+    for idx, league in enumerate(leagues[:10]):
+        name = league.name if hasattr(league, 'name') else str(league)
+        event_count = league.event_count if hasattr(league, 'event_count') else 0
+        
+        if event_count > 0:
+            label = f"🏆 {name} ({event_count} events)"
+        else:
+            label = f"🏆 {name}"
+        
+        buttons.append([InlineKeyboardButton(label, callback_data=f"lg_{idx}")])
+    
+    # Add "All Events" option to skip league filter
+    buttons.append([InlineKeyboardButton("📋 All Events (no filter)", callback_data="lg_all")])
+    buttons.append([InlineKeyboardButton("🔙 Sports", callback_data="cat_sports")])
+    return InlineKeyboardMarkup(buttons)
+
+
+def search_prompt_keyboard() -> InlineKeyboardMarkup:
+    """Keyboard shown during search input prompt."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ Cancel", callback_data="menu")]
+    ])
+
+
 def events_keyboard(events: List[Any], page: int = 0) -> InlineKeyboardMarkup:
     """
     Events list keyboard (matches/games).
